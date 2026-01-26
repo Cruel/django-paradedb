@@ -9,6 +9,15 @@
 
 ParadeDB full-text search integration for Django ORM.
 
+## Requirements & Compatibility
+
+| Component  | Version            |
+|-----------|--------------------|
+| Python    | 3.13+              |
+| Django    | 6.0+               |
+| ParadeDB  | 0.21.* (tested on 0.21.4) |
+| PostgreSQL| 17, 18 (with ParadeDB extension) |
+
 ## Installation
 
 ```bash
@@ -61,12 +70,6 @@ Unsupported / pending:
 - **ParadeDB Official Docs**: <https://docs.paradedb.com>
 - **ParadeDB Website**: <https://paradedb.com>
 
-## Requirements
-
-- Python 3.13+
-- Django 6.0+
-- PostgreSQL with ParadeDB extension
-
 ## Development
 
 ```bash
@@ -82,6 +85,13 @@ pytest
 # Run linting
 ruff check .
 ruff format .
+```
+
+### Integration tests
+
+```bash
+# Start ParadeDB locally (uses Docker) and run the integration suite
+bash scripts/run_integration_tests.sh
 ```
 
 ## Support
