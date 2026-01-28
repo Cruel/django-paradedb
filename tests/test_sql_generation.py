@@ -3,13 +3,15 @@
 This plugin tests SQL string generation only - no database required.
 """
 
+import json
 from unittest.mock import Mock
 
+import pytest
 from django.db.backends.base.schema import BaseDatabaseSchemaEditor
 from django.db.models import F, Q, Window
 from django.db.models.functions import RowNumber
 
-from paradedb.functions import Score, Snippet
+from paradedb.functions import Agg, Score, Snippet
 from paradedb.indexes import BM25Index
 from paradedb.search import (
     PQ,
@@ -452,3 +454,88 @@ class TestDjangoIntegration:
             str(queryset.query)
             == 'SELECT "tests_product"."id", "tests_product"."description", "tests_product"."category", "tests_product"."rating", "tests_product"."in_stock", "tests_product"."price", "tests_product"."created_at", "tests_product"."metadata", ROW_NUMBER() OVER (PARTITION BY "tests_product"."category" ORDER BY "tests_product"."price" DESC) AS "rank_in_category" FROM "tests_product" WHERE "tests_product"."description" &&& \'shoes\''
         )
+
+
+class TestFacets:
+    """Test facets SQL generation helpers."""
+
+    def test_facets_window_annotation(self) -> None:
+        """Facets window annotation uses pdb.agg() OVER ()."""
+        json_spec = '{"terms":{"field":"category","order":{"_count":"desc"},"size":10}}'
+        queryset = Product.objects.filter(description=ParadeDB("shoes")).annotate(
+            facets=Window(expression=Agg(json_spec))
+        )
+        assert (
+            str(queryset.query)
+            == 'SELECT "tests_product"."id", "tests_product"."description", "tests_product"."category", "tests_product"."rating", "tests_product"."in_stock", "tests_product"."price", "tests_product"."created_at", "tests_product"."metadata", pdb.agg(\'{"terms":{"field":"category","order":{"_count":"desc"},"size":10}}\') OVER () AS "facets" FROM "tests_product" WHERE "tests_product"."description" &&& \'shoes\''
+        )
+
+    def test_facets_requires_paradedb_operator(self) -> None:
+        """facets() raises if no ParadeDB operator is present."""
+        queryset = Product.objects.filter(rating=5).order_by("price")[:5]
+        with pytest.raises(ValueError, match="ParadeDB operator"):
+            queryset.facets("category")
+
+    def test_facets_requires_order_by_and_limit(self) -> None:
+        """facets() raises if include_rows requires order_by + LIMIT."""
+        queryset = Product.objects.filter(description=ParadeDB("shoes"))
+        with pytest.raises(ValueError, match="order_by\\(\\) and a LIMIT"):
+            queryset.facets("category")
+
+    def test_facets_multiple_fields_specs(self) -> None:
+        """facets() generates correct specs for multiple fields."""
+        queryset = Product.objects.filter(description=ParadeDB("shoes")).order_by(
+            "price"
+        )[:5]
+        specs = queryset._build_agg_specs(
+            fields=["category", "rating"],
+            size=10,
+            order="-count",
+            missing=None,
+            agg=None,
+        )
+        assert "category_terms" in specs
+        assert "rating_terms" in specs
+        assert "category" in specs["category_terms"]
+        assert "rating" in specs["rating_terms"]
+
+    def test_facets_single_field_spec_shape(self) -> None:
+        """Single field facets use terms as the root aggregation."""
+        queryset = Product.objects.filter(description=ParadeDB("shoes")).order_by(
+            "price"
+        )[:5]
+        specs = queryset._build_agg_specs(
+            fields=["category"],
+            size=5,
+            order="-count",
+            missing=None,
+            agg=None,
+        )
+        assert list(specs.keys()) == ["_paradedb_facets"]
+        assert json.loads(specs["_paradedb_facets"]) == {
+            "terms": {"field": "category", "order": {"_count": "desc"}, "size": 5}
+        }
+
+    def test_facets_missing_allows_non_string(self) -> None:
+        """Missing values accept non-string JSON types."""
+        queryset = Product.objects.filter(description=ParadeDB("shoes")).order_by(
+            "price"
+        )[:5]
+        specs = queryset._build_agg_specs(
+            fields=["in_stock"],
+            size=None,
+            order=None,
+            missing=False,
+            agg=None,
+        )
+        assert json.loads(specs["_paradedb_facets"]) == {
+            "terms": {"field": "in_stock", "missing": False}
+        }
+
+    def test_facets_requires_unique_fields(self) -> None:
+        """facets() raises when fields are duplicated."""
+        queryset = Product.objects.filter(description=ParadeDB("shoes")).order_by(
+            "price"
+        )[:5]
+        with pytest.raises(ValueError, match="unique"):
+            queryset.facets("category", "category")

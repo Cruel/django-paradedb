@@ -29,16 +29,23 @@ pip install django-paradedb
 ```python
 from django.db import models
 from paradedb.indexes import BM25Index
+from paradedb.queryset import ParadeDBManager, ParadeDBQuerySet
 from paradedb.search import ParadeDB
 
 class Product(models.Model):
     description = models.TextField()
     category = models.CharField(max_length=100)
 
+    objects = ParadeDBManager()
+
     class Meta:
         indexes = [
             BM25Index(
-                fields={'id': {}, 'description': {'tokenizer': 'simple'}},
+                fields={
+                    'id': {},
+                    'description': {'tokenizer': 'simple'},
+                    'category': {'tokenizer': 'literal'},
+                },
                 key_field='id',
                 name='product_search_idx',
             ),
@@ -46,6 +53,51 @@ class Product(models.Model):
 
 # Search
 Product.objects.filter(description=ParadeDB('shoes'))
+```
+
+If you already have a custom manager, compose it with the ParadeDB QuerySet:
+
+```python
+class CustomManager(models.Manager):
+    ...
+
+CustomManagerWithFacets = CustomManager.from_queryset(ParadeDBQuerySet)
+
+class Product(models.Model):
+    ...
+    objects = CustomManagerWithFacets()
+```
+
+## Faceted search
+
+Faceted queries return both rows and an aggregate in one query. ParadeDB requires an `ORDER BY ... LIMIT` Top N query and a ParadeDB operator in the `WHERE` clause. For text fields, use a literal tokenizer for facet fields (see the `category` index config above).
+
+```python
+rows, facets = (
+    Product.objects.filter(description=ParadeDB("running shoes"))
+    .order_by("id")[:5]
+    .facets("category")
+)
+```
+
+To return only the aggregate (no rows), set `include_rows=False`:
+
+```python
+facets = Product.objects.filter(description=ParadeDB("running shoes")).facets(
+    "category",
+    include_rows=False,
+)
+```
+
+Multiple fields are supported:
+
+```python
+rows, facets = (
+    Product.objects.filter(description=ParadeDB("running shoes"))
+    .order_by("id")[:5]
+    .facets("category", "rating")
+)
+# facets = {"category_terms": {...}, "rating_terms": {...}}
 ```
 
 ## Feature Support
@@ -56,13 +108,12 @@ Supported:
 - `PQ` boolean composition
 - Search expressions: `Phrase`, `Fuzzy`, `Parse`, `Term`, `Regex`
 - Annotations: `Score`, `Snippet`
+- Faceted search (`.facets()` and `pdb.agg(...)` integration)
 - `BM25Index` DDL generation (basic + JSON field keys)
 - `MoreLikeThis` query filter
 - Django ORM integration with `Q`, standard filters, and window functions
 
 Unsupported / pending:
-
-- Faceted search (`.facets()` and `pdb.agg(...)` integration)
 
 ## Documentation
 
