@@ -22,11 +22,8 @@ class TestSnippetsIntegration:
         qs = MockItem.objects.filter(description=ParadeDB("wireless")).annotate(
             fragments=Snippets("description")
         )
-        item = qs.first()
-        assert item is not None
-        assert isinstance(item.fragments, list)
-        assert len(item.fragments) > 0
-        assert any("<b>wireless</b>" in f for f in item.fragments)
+        item = qs.get(id=12)
+        assert item.fragments == ["Innovative <b>wireless</b> earbuds"]
 
     def test_snippets_max_num_chars(self) -> None:
         """Verify snippets max_num_chars parameter."""
@@ -119,12 +116,9 @@ class TestSnippetPositionsIntegration:
         qs = MockItem.objects.filter(description=ParadeDB("wireless")).annotate(
             positions=SnippetPositions("description")
         )
-        item = qs.first()
-        assert item is not None
-        assert isinstance(item.positions, list)
-        # ParadeDB returns offsets as strings in some versions, or items in array
-        # Just verify we get results
-        assert len(item.positions) > 0
+        # "Innovative wireless earbuds" -> "wireless" starts at 11, ends at 19
+        item = qs.get(id=12)
+        assert item.positions == [[11, 19]]
 
     def test_snippet_positions_parameterized_field_raises(self) -> None:
         """Verify parameterized field check in SnippetPositions.as_sql."""
