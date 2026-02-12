@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from django.contrib.postgres.fields import ArrayField
 from django.db.backends.base.base import BaseDatabaseWrapper
-from django.db.models import CharField, F, FloatField, Func, JSONField
+from django.db.models import CharField, F, FloatField, Func, IntegerField, JSONField
 from django.db.models.sql.compiler import SQLCompiler
 
 
@@ -141,7 +141,7 @@ class SnippetPositions(Func):
     """
 
     function = "pdb.snippet_positions"
-    output_field = ArrayField(base_field=CharField())
+    output_field = ArrayField(base_field=ArrayField(base_field=IntegerField()))
 
     def __init__(self, field: str) -> None:
         super().__init__(F(field))
