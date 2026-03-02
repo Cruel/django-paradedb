@@ -15,8 +15,16 @@ export PARADEDB_INTEGRATION=1
 export PARADEDB_TEST_DSN="postgres://${USER}:${PASSWORD}@localhost:${PORT}/${DB}"
 export PGPASSWORD="${PASSWORD}"
 
+if ! command -v uv >/dev/null 2>&1; then
+  echo "uv is required to run integration tests." >&2
+  echo "Install uv, then rerun this script." >&2
+  exit 1
+fi
+
+PYTEST_CMD=(uv run --extra dev pytest)
+
 if [[ $# -gt 0 ]]; then
-  ./.venv/bin/python -m pytest "$@"
+  "${PYTEST_CMD[@]}" "$@"
 else
-  ./.venv/bin/python -m pytest -m integration
+  "${PYTEST_CMD[@]}" -m integration
 fi
