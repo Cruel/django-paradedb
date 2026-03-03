@@ -1,7 +1,6 @@
 # Release Management and Compatibility
 
-This document describes how `django-paradedb` versions are released and what
-compatibility guarantees the project provides.
+This document describes how `django-paradedb` versions are released and what compatibility guarantees the project provides.
 
 ## Goals
 
@@ -37,12 +36,7 @@ During this phase:
 
 ## Support Matrix
 
-- **Django**: Current LTS and previous LTS.
-- **ParadeDB**: Latest minor and previous minor (while ParadeDB is pre-1.0).
-- **Postgres**: Versions supported by ParadeDB.
-- **Python**: Versions required by supported Django releases.
-
-Update this matrix whenever support policy changes.
+The canonical support matrix lives in `README.md` under **Requirements & Compatibility** and should be kept up to date.
 
 ## Release Cadence
 
