@@ -22,7 +22,6 @@ env:
   POSTGRES_USER: postgres
   POSTGRES_PASSWORD: postgres
   POSTGRES_DB: postgres
-  PARADEDB_VERSION: 0.22.0
 
 jobs:
   lint:
@@ -112,7 +111,7 @@ jobs:
 
     services:
       paradedb:
-        image: paradedb/paradedb:${{ env.PARADEDB_VERSION }}-pg${{ matrix.postgres-version }}
+        image: paradedb/paradedb:0.22.0-pg${{ matrix.postgres-version }}
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
