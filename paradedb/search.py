@@ -8,7 +8,7 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Any, Literal, TypeAlias, overload
+from typing import Any, Literal, TypeAlias
 
 from django.core.exceptions import FieldDoesNotExist
 from django.db.backends.base.base import BaseDatabaseWrapper
@@ -181,17 +181,33 @@ class Phrase:
     See: https://docs.paradedb.com/documentation/full-text/phrase
     """
 
-    text: str
+    terms: list[str]
     slop: int | None = None
     tokenizer: str | None = None
     boost: float | None = None
     const: float | None = None
 
-    def __post_init__(self) -> None:
-        _validate_string("Phrase text", self.text)
-        if self.slop is not None:
-            _validate_non_negative_int("Phrase slop", self.slop)
-        _validate_optional_string("Phrase tokenizer", self.tokenizer)
+    def __init__(
+        self,
+        *terms: str,
+        slop: int | None = None,
+        tokenizer: str | None = None,
+        boost: float | None = None,
+        const: float | None = None,
+    ) -> None:
+        if len(terms) == 0:
+            raise ValueError("Phrase requires at least one term")
+        for term in terms:
+            _validate_string("Phrase term", term)
+        if slop is not None:
+            _validate_non_negative_int("Phrase slop", slop)
+        _validate_optional_string("Phrase tokenizer", tokenizer)
+
+        object.__setattr__(self, "terms", terms)
+        object.__setattr__(self, "slop", slop)
+        object.__setattr__(self, "tokenizer", tokenizer)
+        object.__setattr__(self, "boost", boost)
+        object.__setattr__(self, "const", const)
 
 
 @dataclass(frozen=True)
@@ -276,11 +292,12 @@ class ProxRegex:
     """Regex clause for use inside a proximity expression."""
 
     pattern: str
-    max_expansions: int = 50
+    max_expansions: int | None = None
 
     def __post_init__(self) -> None:
         _validate_string("ProxRegex pattern", self.pattern)
-        _validate_non_negative_int("ProxRegex max_expansions", self.max_expansions)
+        if self.max_expansions is not None:
+            _validate_non_negative_int("ProxRegex max_expansions", self.max_expansions)
 
 
 ProximityTerm: TypeAlias = str | ProxRegex | list["ProximityTerm"]
@@ -943,6 +960,27 @@ class MoreLikeThis(Expression):
         return ", " + ", ".join(rendered), params
 
 
+TermType = (
+    Match
+    | Empty
+    | Exists
+    | FuzzyTerm
+    | ParseWithField
+    | Range
+    | TermSet
+    | Phrase
+    | ProximityNode
+    | ProximityQuery
+    | Parse
+    | PhrasePrefix
+    | RegexPhrase
+    | RangeTerm
+    | Term
+    | Regex
+    | All
+)
+
+
 class ParadeDB:
     """Wrapper for ParadeDB search terms.
 
@@ -971,96 +1009,8 @@ class ParadeDB:
     contains_over_clause = False
     contains_column_references = False
 
-    @overload
-    def __init__(self, __match: Match) -> None:
-        """Explicit literal search with required Match operator."""
-        ...
-
-    @overload
-    def __init__(
-        self,
-        __expr: Empty
-        | Exists
-        | FuzzyTerm
-        | ParseWithField
-        | Range
-        | TermSet
-        | Parse
-        | PhrasePrefix
-        | RegexPhrase
-        | RangeTerm
-        | Term
-        | Regex
-        | All,
-    ) -> None:
-        """Query expression (must be sole argument)."""
-        ...
-
-    @overload
-    def __init__(self, __phrase1: Phrase, *phrases: Phrase) -> None:
-        """Phrase search with one or more Phrase objects."""
-        ...
-
-    @overload
-    def __init__(self, __proximity: ProximityNode) -> None:
-        """Proximity query"""
-        ...
-
-    @overload
-    def __init__(self, __proximity: ProximityQuery) -> None:
-        """Proximity query"""
-        ...
-
-    def __init__(
-        self,
-        *terms: Match
-        | Phrase
-        | ProximityNode
-        | ProximityQuery
-        | Empty
-        | Exists
-        | FuzzyTerm
-        | ParseWithField
-        | Range
-        | TermSet
-        | Parse
-        | PhrasePrefix
-        | RegexPhrase
-        | RangeTerm
-        | Term
-        | Regex
-        | All,
-        tokenizer: str | None = None,
-        boost: float | None = None,
-        const: float | None = None,
-    ) -> None:
-        if not terms:
-            raise ValueError("ParadeDB requires at least one search term.")
-        self._terms = terms
-        self._tokenizer = tokenizer
-        self._distance: int | None = None
-        self._prefix = False
-        self._transposition_cost_one = False
-        self._boost = boost
-        self._const = const
-
-        if any(isinstance(term, str) for term in self._terms):
-            raise TypeError(
-                "Plain string terms are not supported. Use ParadeDB(Match(..., operator=...))."
-            )
-
-        if self._tokenizer is not None:
-            raise ValueError(
-                "ParadeDB tokenizer keyword is only supported via Match(..., tokenizer=...)."
-            )
-        if self._boost is not None:
-            raise ValueError(
-                "ParadeDB boost keyword is only supported via Match(..., boost=...)."
-            )
-        if self._const is not None:
-            raise ValueError(
-                "ParadeDB const keyword is only supported via Match(..., const=...)."
-            )
+    def __init__(self, term: TermType) -> None:
+        self._term = term
 
     def resolve_expression(
         self,
@@ -1072,198 +1022,26 @@ class ParadeDB:
     ) -> ParadeDB:
         return self
 
-    def get_source_expressions(self) -> list[object]:
-        return []
-
     def as_sql(
         self,
         _compiler: SQLCompiler,
         _connection: BaseDatabaseWrapper,
         lhs_sql: str,
     ) -> tuple[str, list[object]]:
-        operator, terms = self._resolve_terms()
-        literals = [self._render_term(term) for term in terms]
+        rendered = self._render_term(self._term)
+        return f"{lhs_sql} {self._lookup_operator()} {rendered}", []
 
-        if len(literals) == 1:
-            # Match-level fuzzy and scoring are applied here after rendering.
-            rendered = self._append_fuzzy(
-                literals[0],
-                distance=self._distance,
-                prefix=self._prefix,
-                transposition_cost_one=self._transposition_cost_one,
-            )
-            if (
-                _is_fuzzy_enabled(
-                    distance=self._distance,
-                    prefix=self._prefix,
-                    transposition_cost_one=self._transposition_cost_one,
-                )
-                and self._const is not None
-            ):
-                # pdb.fuzzy has no direct cast to pdb.const; bridge via pdb.query.
-                rendered = f"{rendered}::pdb.query"
-            scored = self._append_scoring(
-                rendered, boost=self._boost, const=self._const
-            )
-            return f"{lhs_sql} {operator} {scored}", []
-
-        # Multi-term with fuzzy: pdb.fuzzy[] (per-element cast) has no matching operator.
-        # Cast the whole ARRAY: ARRAY['term1', 'term2']::pdb.fuzzy(N) is valid.
-        # Use bare quoted terms (not literals, which already have per-element fuzzy applied).
-        if all(isinstance(t, str) for t in terms) and _is_fuzzy_enabled(
-            distance=self._distance,
-            prefix=self._prefix,
-            transposition_cost_one=self._transposition_cost_one,
-        ):
-            bare = [self._quote_term(t) for t in terms if isinstance(t, str)]
-            array_sql = f"ARRAY[{', '.join(bare)}]"
-            array_sql = self._append_fuzzy(
-                array_sql,
-                distance=self._distance,
-                prefix=self._prefix,
-                transposition_cost_one=self._transposition_cost_one,
-            )
-            scored = self._append_scoring(
-                array_sql, boost=self._boost, const=self._const
-            )
-            return f"{lhs_sql} {operator} {scored}", []
-
-        # Multi-term: cast applied to the whole ARRAY, not per-element.
-        # Per-element casts (e.g. ARRAY['a'::pdb.boost(2), 'b'::pdb.boost(2)]) produce
-        # pdb.boost[] which has no matching operator. text[]::pdb.boost(N) is correct.
-        array_sql = f"ARRAY[{', '.join(literals)}]"
-        # Apply fuzzy to the whole array for multi-term queries.
-        array_sql = self._append_fuzzy(
-            array_sql,
-            distance=self._distance,
-            prefix=self._prefix,
-            transposition_cost_one=self._transposition_cost_one,
-        )
-        if (
-            _is_fuzzy_enabled(
-                distance=self._distance,
-                prefix=self._prefix,
-                transposition_cost_one=self._transposition_cost_one,
-            )
-            and self._const is not None
-        ):
-            # pdb.fuzzy has no direct cast to pdb.const; bridge via pdb.query.
-            array_sql = f"{array_sql}::pdb.query"
-        array_sql = self._append_scoring(
-            array_sql, boost=self._boost, const=self._const
-        )
-        return f"{lhs_sql} {operator} {array_sql}", []
-
-    def _resolve_terms(
-        self,
-    ) -> tuple[
-        str,
-        tuple[
-            str
-            | Empty
-            | Exists
-            | FuzzyTerm
-            | ParseWithField
-            | Range
-            | TermSet
-            | Phrase
-            | ProximityNode
-            | ProximityQuery
-            | Parse
-            | PhrasePrefix
-            | RegexPhrase
-            | RangeTerm
-            | Term
-            | Regex
-            | All,
-            ...,
-        ],
-    ]:
-        if any(
-            isinstance(
-                term,
-                Empty
-                | Exists
-                | FuzzyTerm
-                | ParseWithField
-                | Range
-                | TermSet
-                | Parse
-                | PhrasePrefix
-                | RegexPhrase
-                | RangeTerm
-                | Term
-                | Regex
-                | All,
-            )
-            for term in self._terms
-        ):
-            if len(self._terms) != 1:
-                raise ValueError(
-                    "Empty/Exists/FuzzyTerm/ParseWithField/Range/TermSet/Parse/PhrasePrefix/RegexPhrase/RangeTerm/Term/Regex/All queries must be a single term."
-                )
-            term = self._terms[0]
-            if not isinstance(
-                term,
-                Empty
-                | Exists
-                | FuzzyTerm
-                | ParseWithField
-                | Range
-                | TermSet
-                | Parse
-                | PhrasePrefix
-                | RegexPhrase
-                | RangeTerm
-                | Term
-                | Regex
-                | All,
-            ):
-                raise TypeError(
-                    "Empty/Exists/FuzzyTerm/ParseWithField/Range/TermSet/Parse/PhrasePrefix/RegexPhrase/RangeTerm/Term/Regex/All cannot be mixed with other terms."
-                )
-            return OP_SEARCH, (term,)
-
-        if any(isinstance(term, Match) for term in self._terms):
-            if len(self._terms) != 1:
-                raise ValueError("Match queries must be a single term.")
-            term = self._terms[0]
-            if not isinstance(term, Match):
-                raise TypeError("Match queries cannot be mixed with other terms.")
-            if term.operator == "OR":
-                operator = OP_OR
-            elif term.operator == "AND":
-                operator = OP_AND
+    def _lookup_operator(self) -> str:
+        if isinstance(self._term, Match):
+            if self._term.operator == "OR":
+                return OP_OR
+            elif self._term.operator == "AND":
+                return OP_AND
             else:
                 raise ValueError("Match operator must be 'AND' or 'OR'.")
-            self._tokenizer = term.tokenizer
-            self._distance = term.distance
-            self._prefix = term.prefix
-            self._transposition_cost_one = term.transposition_cost_one
-            self._boost = term.boost
-            self._const = term.const
-            return operator, term.terms
-
-        if any(isinstance(term, Phrase) for term in self._terms):
-            phrases: list[Phrase] = []
-            for term in self._terms:
-                if not isinstance(term, Phrase):
-                    raise TypeError("Phrase searches only accept Phrase terms.")
-                phrases.append(term)
-            return OP_PHRASE, tuple(phrases)
-
-        if any(
-            isinstance(term, ProximityNode | ProximityQuery) for term in self._terms
-        ):
-            if len(self._terms) != 1:
-                raise ValueError("Proximity queries accept a single argument.")
-            term = self._terms[0]
-            if not isinstance(term, ProximityNode | ProximityQuery):
-                raise TypeError("Proximity cannot be mixed with other terms.")
-            return OP_SEARCH, (term,)
-
-        # Plain string terms are rejected in __init__, so this path is unreachable.
-        raise RuntimeError("Unreachable ParadeDB term resolution branch.")
+        if isinstance(self._term, Phrase):
+            return OP_PHRASE
+        return OP_SEARCH
 
     @staticmethod
     def _quote_term(term: str) -> str:
@@ -1347,42 +1125,30 @@ class ParadeDB:
         if isinstance(term, str):
             return self._quote_term(term)
         if isinstance(term, ProxRegex):
+            if term.max_expansions is None:
+                return f"{FN_PROX_REGEX}({self._quote_term(term.pattern)})"
             return f"{FN_PROX_REGEX}({self._quote_term(term.pattern)}, {term.max_expansions})"
         if isinstance(term, list):
             parts = [self._render_proximity_term(x) for x in term]
             return f"{FN_PROX_ARRAY}({', '.join(parts)})"
         raise AssertionError(f"Unhandled proximity term: {term!r}")
 
-    def _render_term(
-        self,
-        term: str
-        | Empty
-        | Exists
-        | FuzzyTerm
-        | ParseWithField
-        | Range
-        | TermSet
-        | Phrase
-        | ProximityNode
-        | ProximityQuery
-        | Parse
-        | PhrasePrefix
-        | RegexPhrase
-        | RangeTerm
-        | Term
-        | Regex
-        | All,
-    ) -> str:
+    def _render_term(self, term: TermType) -> str:
         if isinstance(term, Phrase):
-            literal = self._quote_term(term.text)
+            if len(term.terms) == 1:
+                rendered = self._quote_term(term.terms[0])
+            else:
+                quoted = [self._quote_term(item) for item in term.terms]
+                rendered = f"ARRAY[{', '.join(quoted)}]"
             if term.slop is not None:
-                literal = f"{literal}::{PDB_TYPE_SLOP}({term.slop})"
+                rendered = f"{rendered}::{PDB_TYPE_SLOP}({term.slop})"
                 # pdb.slop has no direct cast to pdb.const; bridge via pdb.query.
+                # Once this is fixed in the DB we can remove this
                 if term.const is not None:
-                    literal = f"{literal}::{PDB_TYPE_QUERY}"
+                    rendered = f"{rendered}::{PDB_TYPE_QUERY}"
             if term.tokenizer is not None:
-                literal = f"{literal}::{_tokenizer_cast(term.tokenizer)}"
-            return self._append_scoring(literal, boost=term.boost, const=term.const)
+                rendered = f"{rendered}::{_tokenizer_cast(term.tokenizer)}"
+            return self._append_scoring(rendered, boost=term.boost, const=term.const)
         if isinstance(term, ProximityNode):
             return self._render_proximity_node(term)
         if isinstance(term, ProximityQuery):
@@ -1496,13 +1262,36 @@ class ParadeDB:
             return self._append_scoring(rendered, boost=term.boost, const=term.const)
         if isinstance(term, All):
             return f"{FN_ALL}()"
-        if not isinstance(term, str):
-            raise TypeError("Unsupported ParadeDB term type.")
-        # Match(...) resolves into plain string terms, which are rendered here.
-        rendered = self._quote_term(term)
-        if self._tokenizer is not None:
-            rendered = f"{rendered}::{_tokenizer_cast(self._tokenizer)}"
-        return rendered
+        if isinstance(term, Match):
+            if len(term.terms) == 1:
+                rendered = self._quote_term(term.terms[0])
+            else:
+                quoted = [self._quote_term(item) for item in term.terms]
+                rendered = f"ARRAY[{', '.join(quoted)}]"
+            if term.tokenizer is not None:
+                rendered = f"{rendered}::{_tokenizer_cast(term.tokenizer)}"
+            rendered = self._append_fuzzy(
+                rendered,
+                distance=term.distance,
+                prefix=term.prefix,
+                transposition_cost_one=term.transposition_cost_one,
+            )
+            if (
+                _is_fuzzy_enabled(
+                    distance=term.distance,
+                    prefix=term.prefix,
+                    transposition_cost_one=term.transposition_cost_one,
+                )
+                and term.const is not None
+            ):
+                # pdb.fuzzy has no direct cast to pdb.const; bridge via pdb.query.
+                # Casting fuzzy to const should be supported in ParadeDB. Once it is we can remove this
+                rendered = f"{rendered}::pdb.query"
+            rendered = self._append_scoring(
+                rendered, boost=term.boost, const=term.const
+            )
+            return rendered
+        raise TypeError(f"Unsupported ParadeDB term type. {term}")
 
     @staticmethod
     def _render_term_set_array(
