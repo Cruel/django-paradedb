@@ -21,8 +21,6 @@ from paradedb.search import (
     Phrase,
     PhrasePrefix,
     Proximity,
-    ProximityArray,
-    ProximityRegex,
     ProxRegex,
     RangeTerm,
     Regex,
@@ -251,7 +249,7 @@ class TestProximitySearch:
 
     def test_proximity_unordered(self) -> None:
         queryset = Product.objects.filter(
-            description=ParadeDB(Proximity("running shoes", distance=2))
+            description=ParadeDB(Proximity("running").within(2, "shoes"))
         )
         assert (
             str(queryset.query)
@@ -260,7 +258,7 @@ class TestProximitySearch:
 
     def test_proximity_ordered(self) -> None:
         queryset = Product.objects.filter(
-            description=ParadeDB(Proximity("running shoes", distance=2, ordered=True))
+            description=ParadeDB(Proximity("running").within(2, "shoes", ordered=True))
         )
         assert (
             str(queryset.query)
@@ -269,7 +267,7 @@ class TestProximitySearch:
 
     def test_proximity_with_boost(self) -> None:
         queryset = Product.objects.filter(
-            description=ParadeDB(Proximity("running shoes", distance=2, boost=1.5))
+            description=ParadeDB(Proximity("running").within(2, "shoes").boost(1.5))
         )
         assert (
             str(queryset.query)
@@ -278,7 +276,7 @@ class TestProximitySearch:
 
     def test_proximity_with_const(self) -> None:
         queryset = Product.objects.filter(
-            description=ParadeDB(Proximity("running shoes", distance=2, const=1.0))
+            description=ParadeDB(Proximity("running").within(2, "shoes").const(1.0))
         )
         assert (
             str(queryset.query)
@@ -287,7 +285,9 @@ class TestProximitySearch:
 
     def test_proximity_three_terms_chain(self) -> None:
         queryset = Product.objects.filter(
-            description=ParadeDB(Proximity("running shoes lightweight", distance=2))
+            description=ParadeDB(
+                Proximity("running").within(2, "shoes").within(2, "lightweight")
+            )
         )
         assert (
             str(queryset.query)
@@ -297,13 +297,13 @@ class TestProximitySearch:
     def test_multiple_proximity_terms_rejected(self) -> None:
         queryset = Product.objects.filter(
             description=ParadeDB(
-                Proximity("running shoes", distance=2),
-                Proximity("lightweight design", distance=2),
+                Proximity("running").within(2, "shoes"),
+                Proximity("lightweight").within(2, "design"),
             )
         )
         with pytest.raises(
             ValueError,
-            match=r"Proximity queries accept a single Proximity term\. Use ProximityArray for multiple proximity clauses\.",
+            match="Proximity queries accept a single argument",
         ):
             _ = str(queryset.query)
 
@@ -311,15 +311,13 @@ class TestProximitySearch:
         with pytest.raises(
             ValueError, match=r"Proximity distance must be zero or positive\."
         ):
-            Proximity("running shoes", distance=-1)
+            Proximity("running").within(-1, "shoes")
 
-    def test_proximity_single_word_rejected(self) -> None:
-        queryset = Product.objects.filter(
-            description=ParadeDB(Proximity("running", distance=2))
-        )
+    def test_proximity_without_nodes_rejected(self) -> None:
+        queryset = Product.objects.filter(description=ParadeDB(Proximity("running")))
         with pytest.raises(
-            ValueError,
-            match=r"Proximity text must include at least two whitespace-separated terms\.",
+            RuntimeError,
+            match=r"Unreachable ParadeDB term resolution branch.",
         ):
             _ = str(queryset.query)
 
@@ -609,7 +607,7 @@ class TestRegexPhraseQuery:
 class TestProximityAdvancedQuery:
     def test_proximity_regex_query(self) -> None:
         queryset = Product.objects.filter(
-            description=ParadeDB(ProximityRegex("running", "sho.*", distance=1))
+            description=ParadeDB(Proximity("running").within(1, ProxRegex("sho.*")))
         )
         assert (
             str(queryset.query)
@@ -618,13 +616,7 @@ class TestProximityAdvancedQuery:
 
     def test_proximity_array_query(self) -> None:
         queryset = Product.objects.filter(
-            description=ParadeDB(
-                ProximityArray(
-                    ["sleek", "running"],
-                    "shoes",
-                    distance=1,
-                )
-            )
+            description=ParadeDB(Proximity(["sleek", "running"]).within(1, "shoes"))
         )
         assert (
             str(queryset.query)
@@ -634,11 +626,7 @@ class TestProximityAdvancedQuery:
     def test_proximity_array_with_prox_regex_items(self) -> None:
         queryset = Product.objects.filter(
             description=ParadeDB(
-                ProximityArray(
-                    ["chicken", ProxRegex("r..s")],
-                    "delicious",
-                    distance=1,
-                )
+                Proximity(["chicken", ProxRegex("r..s")]).within(1, "delicious")
             )
         )
         assert (
@@ -649,10 +637,9 @@ class TestProximityAdvancedQuery:
     def test_proximity_array_with_prox_regex_custom_expansions(self) -> None:
         queryset = Product.objects.filter(
             description=ParadeDB(
-                ProximityArray(
-                    [ProxRegex("sl.*", max_expansions=100), "white"],
+                Proximity([ProxRegex("sl.*", max_expansions=100), "white"]).within(
+                    1,
                     "shoes",
-                    distance=1,
                 )
             )
         )
@@ -664,10 +651,9 @@ class TestProximityAdvancedQuery:
     def test_proximity_array_regex_rhs_query(self) -> None:
         queryset = Product.objects.filter(
             description=ParadeDB(
-                ProximityArray(
-                    "running",
+                Proximity("running").within(
+                    1,
                     ProxRegex("sho.*", max_expansions=80),
-                    distance=1,
                 )
             )
         )
@@ -679,16 +665,78 @@ class TestProximityAdvancedQuery:
     def test_proximity_array_list_rhs_query(self) -> None:
         queryset = Product.objects.filter(
             description=ParadeDB(
-                ProximityArray(
-                    "running",
+                Proximity("running").within(
+                    1,
                     ["shoes", ProxRegex("boot.*", max_expansions=80)],
-                    distance=1,
                 )
             )
         )
         assert (
             str(queryset.query)
             == 'SELECT "tests_product"."id", "tests_product"."description", "tests_product"."category", "tests_product"."rating", "tests_product"."in_stock", "tests_product"."price", "tests_product"."created_at", "tests_product"."metadata" FROM "tests_product" WHERE "tests_product"."description" @@@ (\'running\' ## 1 ## pdb.prox_array(\'shoes\', pdb.prox_regex(\'boot.*\', 80)))'
+        )
+
+    def test_proximity_chain_mixed_ordering_query(self) -> None:
+        queryset = Product.objects.filter(
+            description=ParadeDB(
+                Proximity(ProxRegex("sho.*"))
+                .within(1, ["history", "science"], ordered=True)
+                .within(5, "hardcover")
+            )
+        )
+        assert (
+            str(queryset.query)
+            == 'SELECT "tests_product"."id", "tests_product"."description", "tests_product"."category", "tests_product"."rating", "tests_product"."in_stock", "tests_product"."price", "tests_product"."created_at", "tests_product"."metadata" FROM "tests_product" WHERE "tests_product"."description" @@@ (pdb.prox_regex(\'sho.*\', 50) ##> 1 ##> pdb.prox_array(\'history\', \'science\') ## 5 ## \'hardcover\')'
+        )
+
+    def test_proximity_nested_child_constructor_query(self) -> None:
+        queryset = Product.objects.filter(
+            description=ParadeDB(
+                Proximity("running")
+                .within(
+                    2,
+                    [ProxRegex("sho.*", max_expansions=80), "boots"],
+                )
+                .within(4, "hardcover", ordered=True)
+            )
+        )
+        assert (
+            str(queryset.query)
+            == 'SELECT "tests_product"."id", "tests_product"."description", "tests_product"."category", "tests_product"."rating", "tests_product"."in_stock", "tests_product"."price", "tests_product"."created_at", "tests_product"."metadata" FROM "tests_product" WHERE "tests_product"."description" @@@ (\'running\' ## 2 ## pdb.prox_array(pdb.prox_regex(\'sho.*\', 80), \'boots\') ##> 4 ##> \'hardcover\')'
+        )
+
+    def test_proximity_associativity_parenthesizes_grouped_rhs(self) -> None:
+        queryset = Product.objects.filter(
+            description=ParadeDB(
+                Proximity("running").within(
+                    2, Proximity("shoes").within(4, "hardcover", ordered=True)
+                )
+            )
+        )
+        assert (
+            str(queryset.query)
+            == 'SELECT "tests_product"."id", "tests_product"."description", "tests_product"."category", "tests_product"."rating", "tests_product"."in_stock", "tests_product"."price", "tests_product"."created_at", "tests_product"."metadata" FROM "tests_product" WHERE "tests_product"."description" @@@ (\'running\' ## 2 ## (\'shoes\' ##> 4 ##> \'hardcover\'))'
+        )
+
+    def test_deeply_nested_query(self) -> None:
+        queryset = Product.objects.filter(
+            description=ParadeDB(
+                Proximity("running")
+                .within(
+                    2,
+                    Proximity(
+                        ["shoes", ProxRegex("sho.*"), ["shoe", [ProxRegex("shoe")]]]
+                    )
+                    .within(4, "hardcover", ordered=True)
+                    .within(100, "foo"),
+                )
+                .within(2, ProxRegex("bar"))
+                .boost(1.2)
+            )
+        )
+        assert (
+            str(queryset.query)
+            == 'SELECT "tests_product"."id", "tests_product"."description", "tests_product"."category", "tests_product"."rating", "tests_product"."in_stock", "tests_product"."price", "tests_product"."created_at", "tests_product"."metadata" FROM "tests_product" WHERE "tests_product"."description" @@@ (\'running\' ## 2 ## (pdb.prox_array(\'shoes\', pdb.prox_regex(\'sho.*\', 50), pdb.prox_array(\'shoe\', pdb.prox_array(pdb.prox_regex(\'shoe\', 50)))) ##> 4 ##> \'hardcover\' ## 100 ## \'foo\') ## 2 ## pdb.prox_regex(\'bar\', 50))::pdb.boost(1.2)'
         )
 
 

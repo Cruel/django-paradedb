@@ -9,6 +9,8 @@ from __future__ import annotations
 import pytest
 
 from paradedb.search import (
+    Boost,
+    Const,
     Match,
     MoreLikeThis,
     ParadeDB,
@@ -16,8 +18,7 @@ from paradedb.search import (
     Phrase,
     PhrasePrefix,
     Proximity,
-    ProximityArray,
-    ProximityRegex,
+    ProximityNode,
     ProxRegex,
     Regex,
     RegexPhrase,
@@ -251,22 +252,20 @@ class TestDistanceValidation:
 class TestExpressionValidation:
     """Validation coverage for expression dataclasses."""
 
-    def test_proximity_boost_and_const_deferred_to_database(self) -> None:
-        proximity = Proximity("a b", distance=1, boost=1.0, const=1.0)
-        assert proximity.boost == 1.0
-        assert proximity.const == 1.0
+    def test_proximity_boost_and_const_wrap_query_node(self) -> None:
+        proximity = Proximity("a").within(1, "b")
+        boosted = proximity.boost(1.0)
+        constant = proximity.const(1.0)
+        assert boosted.node == proximity
+        assert boosted.relevance_modifier == Boost(1.0)
+        assert constant.node == proximity
+        assert constant.relevance_modifier == Const(1.0)
 
-    def test_proximity_text_must_be_string(self) -> None:
-        with pytest.raises(TypeError, match="Proximity text must be a string"):
-            Proximity(1, distance=1)  # type: ignore[arg-type]
-
-    def test_proximity_distance_must_be_integer(self) -> None:
-        with pytest.raises(TypeError, match="Proximity distance must be an integer"):
-            Proximity("a b", distance=True)  # type: ignore[arg-type]
-
-    def test_proximity_ordered_must_be_boolean(self) -> None:
-        with pytest.raises(TypeError, match="Proximity ordered must be a boolean"):
-            Proximity("a b", distance=1, ordered=1)  # type: ignore[arg-type]
+    def test_proximity_start_must_be_string_or_proxregex(self) -> None:
+        with pytest.raises(
+            TypeError, match="Proximity term must be strings or ProxRegex instances"
+        ):
+            Proximity(1)  # type: ignore[arg-type]
 
     def test_parse_boost_and_const_deferred_to_database(self) -> None:
         parsed = Parse("query", boost=1.0, const=1.0)
@@ -318,65 +317,59 @@ class TestExpressionValidation:
         with pytest.raises(TypeError, match="Regex pattern must be a string"):
             Regex(123)  # type: ignore[arg-type]
 
-    def test_proximity_regex_negative_distance_raises(self) -> None:
-        with pytest.raises(ValueError, match="distance must be zero or positive"):
-            ProximityRegex("left", "right.*", distance=-1)
+    def test_proximity_negative_distance_raises(self) -> None:
+        with pytest.raises(
+            ValueError, match="Proximity distance must be zero or positive"
+        ):
+            Proximity("left").within(-1, ProxRegex("right.*"))
 
-    def test_proximity_regex_negative_max_expansions_raises(self) -> None:
+    def test_prox_regex_negative_max_expansions_in_chain_raises(self) -> None:
         with pytest.raises(ValueError, match="max_expansions must be zero or positive"):
-            ProximityRegex("left", "right.*", distance=1, max_expansions=-1)
+            Proximity("left").within(1, ProxRegex("right.*", max_expansions=-1))
 
-    def test_proximity_regex_boost_and_const_deferred_to_database(self) -> None:
-        proximity_regex = ProximityRegex(
-            "left", "right.*", distance=1, boost=1.0, const=1.0
-        )
-        assert proximity_regex.boost == 1.0
-        assert proximity_regex.const == 1.0
+    def test_proximity_with_prox_regex_boost_and_const_wrap_query_node(self) -> None:
+        proximity = Proximity("left").within(1, ProxRegex("right.*"))
+        assert proximity.boost(1.0).relevance_modifier == Boost(1.0)
+        assert proximity.const(1.0).relevance_modifier == Const(1.0)
 
-    def test_proximity_array_requires_left_term(self) -> None:
-        with pytest.raises(ValueError, match="requires at least one left_term item"):
-            ProximityArray([], "right", distance=1)
+    def test_proximity_allows_empty_start_term_list(self) -> None:
+        proximity = Proximity([])
+        assert proximity.term == []
 
-    def test_proximity_array_requires_right_term(self) -> None:
-        with pytest.raises(ValueError, match="requires at least one right_term item"):
-            ProximityArray("left", [], distance=1)
+    def test_proximity_then_allows_empty_term_list(self) -> None:
+        proximity = Proximity("left").within(1, [])
+        assert proximity.right == []
 
-    def test_proximity_array_negative_distance_raises(self) -> None:
-        with pytest.raises(ValueError, match="distance must be zero or positive"):
-            ProximityArray("left", "right", distance=-1)
+    def test_proximity_then_negative_distance_raises(self) -> None:
+        with pytest.raises(
+            ValueError, match="Proximity distance must be zero or positive"
+        ):
+            Proximity("left").within(-1, "right")
 
-    def test_proximity_array_boost_and_const_deferred_to_database(self) -> None:
-        proximity_array = ProximityArray(
-            "left",
-            "right",
-            distance=1,
-            boost=1.0,
-            const=1.0,
-        )
-        assert proximity_array.boost == 1.0
-        assert proximity_array.const == 1.0
+    def test_proximity_then_preserves_non_boolean_ordered_value(self) -> None:
+        proximity = Proximity("left").within(1, "right", ordered=1)  # type: ignore[arg-type]
+        assert proximity.ordered == 1
 
-    def test_proximity_array_accepts_prox_regex_items(self) -> None:
-        proximity_array = ProximityArray(
-            ["chicken", ProxRegex("r..s")],
-            "delicious",
-            distance=1,
-        )
-        assert len(proximity_array.left_term) == 2
-        assert proximity_array.left_term[0] == "chicken"
-        assert isinstance(proximity_array.left_term[1], ProxRegex)
-        assert proximity_array.left_term[1].pattern == "r..s"
+    def test_proximity_boost_and_const_with_step_wrap_query_node(self) -> None:
+        proximity = Proximity("left").within(1, "right")
+        assert proximity.boost(1.0).node == proximity
+        assert proximity.const(1.0).node == proximity
 
-    def test_proximity_array_accepts_right_term_lists(self) -> None:
-        proximity_array = ProximityArray(
-            "chicken",
-            ["delicious", ProxRegex("cris.*")],
-            distance=1,
-        )
-        assert len(proximity_array.right_term) == 2
-        assert proximity_array.right_term[0] == "delicious"
-        assert isinstance(proximity_array.right_term[1], ProxRegex)
-        assert proximity_array.right_term[1].pattern == "cris.*"
+    def test_proximity_accepts_prox_regex_items_in_start(self) -> None:
+        proximity = Proximity(["chicken", ProxRegex("r..s")]).within(1, "delicious")
+        assert isinstance(proximity.left, list)
+        assert len(proximity.left) == 2
+        assert proximity.left[0] == "chicken"
+        assert isinstance(proximity.left[1], ProxRegex)
+        assert proximity.left[1].pattern == "r..s"
+
+    def test_proximity_accepts_term_lists_in_step(self) -> None:
+        proximity = Proximity("chicken").within(1, ["delicious", ProxRegex("cris.*")])
+        assert isinstance(proximity.right, list)
+        assert len(proximity.right) == 2
+        assert proximity.right[0] == "delicious"
+        assert isinstance(proximity.right[1], ProxRegex)
+        assert proximity.right[1].pattern == "cris.*"
 
     def test_prox_regex_negative_max_expansions_raises(self) -> None:
         with pytest.raises(ValueError, match="max_expansions must be zero or positive"):
@@ -395,19 +388,61 @@ class TestExpressionValidation:
         assert prox_regex.pattern == "pattern"
         assert prox_regex.max_expansions == 50
 
-    def test_proximity_array_left_term_must_be_strings_or_proxregex(self) -> None:
+    def test_proximity_start_must_be_strings_or_proxregex(self) -> None:
         with pytest.raises(
             TypeError,
-            match="left_term must be strings or ProxRegex instances",
+            match="term must be strings or ProxRegex instances",
         ):
-            ProximityArray(123, "right", distance=1)  # type: ignore[arg-type]
+            Proximity(123)  # type: ignore[arg-type]
 
-    def test_proximity_array_right_term_must_be_strings_or_proxregex(self) -> None:
-        with pytest.raises(
-            TypeError,
-            match="right_term must be strings or ProxRegex instances",
-        ):
-            ProximityArray("left", 123, distance=1)  # type: ignore[arg-type]
+    def test_proximity_step_preserves_unvalidated_term_value(self) -> None:
+        proximity = Proximity("left").within(1, 123)  # type: ignore[arg-type]
+        assert proximity.right == 123
+
+    def test_proximity_chain_builder_preserves_ordering(self) -> None:
+        chain = Proximity("left").within(
+            1,
+            ["middle", ProxRegex("r.*")],
+            ordered=True,
+        )
+        assert chain.ordered is True
+
+    def test_then_accepts_explicit_grouped_proximity_child(self) -> None:
+        grouped = ProximityNode(
+            1,
+            False,
+            "middle",
+            ProximityNode(2, True, "right", "tail"),
+        )
+        chain = Proximity("left").within(3, grouped)
+        assert chain.right == grouped
+        assert chain.left == "left"
+        assert chain.distance == 3
+        assert chain.ordered is False
+
+    def test_proximity_node_accepts_nested_proximity_children(self) -> None:
+        child = ProximityNode(2, True, "right", "tail")
+        node = ProximityNode(1, False, "left", child)
+        assert node.left == "left"
+        assert node.right == child
+        assert node.distance == 1
+
+    def test_root_proximity_rejects_step_only_options(self) -> None:
+        with pytest.raises(TypeError):
+            Proximity("left", ordered=True)  # type: ignore[call-arg]
+
+    def test_proximity_step_requires_distance(self) -> None:
+        with pytest.raises(TypeError):
+            ProximityNode("left")  # type: ignore[call-arg]
+
+    def test_top_level_proximity_step_renders_directly(self) -> None:
+        queryset = Product.objects.filter(
+            description=ParadeDB(ProximityNode(1, False, "right", "tail"))
+        )
+        assert (
+            str(queryset.query)
+            == 'SELECT "tests_product"."id", "tests_product"."description", "tests_product"."category", "tests_product"."rating", "tests_product"."in_stock", "tests_product"."price", "tests_product"."created_at", "tests_product"."metadata" FROM "tests_product" WHERE "tests_product"."description" @@@ (\'right\' ## 1 ## \'tail\')'
+        )
 
 
 class TestMoreLikeThisValidation:

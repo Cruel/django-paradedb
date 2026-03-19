@@ -15,8 +15,6 @@ from paradedb.search import (
     Phrase,
     PhrasePrefix,
     Proximity,
-    ProximityArray,
-    ProximityRegex,
     ProxRegex,
     RangeTerm,
     Regex,
@@ -90,7 +88,7 @@ def test_phrase_with_slop() -> None:
 def test_proximity_unordered() -> None:
     ids = _ids(
         MockItem.objects.filter(
-            description=ParadeDB(Proximity("keyboard metal", distance=1))
+            description=ParadeDB(Proximity("keyboard").within(1, "metal"))
         )
     )
     assert 1 in ids
@@ -99,7 +97,7 @@ def test_proximity_unordered() -> None:
 def test_proximity_ordered() -> None:
     ids = _ids(
         MockItem.objects.filter(
-            description=ParadeDB(Proximity("sleek running", distance=2, ordered=True))
+            description=ParadeDB(Proximity("sleek").within(1, "running", ordered=True))
         )
     )
     assert 3 in ids
@@ -109,7 +107,7 @@ def test_proximity_with_boost() -> None:
     ids = _ids(
         MockItem.objects.filter(
             description=ParadeDB(
-                Proximity("sleek running", distance=2, ordered=True, boost=2.0)
+                Proximity("sleek").within(2, "running", ordered=True).boost(2.0)
             )
         )
     )
@@ -120,7 +118,7 @@ def test_proximity_with_const() -> None:
     ids = _ids(
         MockItem.objects.filter(
             description=ParadeDB(
-                Proximity("sleek running", distance=2, ordered=True, const=1.0)
+                Proximity("sleek").within(2, "running", ordered=True).const(1.0)
             )
         )
     )
@@ -130,7 +128,7 @@ def test_proximity_with_const() -> None:
 def test_proximity_regex_query() -> None:
     ids = _ids(
         MockItem.objects.filter(
-            description=ParadeDB(ProximityRegex("running", "sho.*", distance=1))
+            description=ParadeDB(Proximity("running").within(1, ProxRegex("sho.*")))
         )
     )
     assert ids == {3}
@@ -139,13 +137,7 @@ def test_proximity_regex_query() -> None:
 def test_proximity_array_query() -> None:
     ids = _ids(
         MockItem.objects.filter(
-            description=ParadeDB(
-                ProximityArray(
-                    ["sleek", "running"],
-                    "shoes",
-                    distance=1,
-                )
-            )
+            description=ParadeDB(Proximity(["sleek", "running"]).within(1, "shoes"))
         )
     )
     assert ids == {3}
@@ -155,11 +147,7 @@ def test_proximity_array_with_mixed_prox_regex_items() -> None:
     ids = _ids(
         MockItem.objects.filter(
             description=ParadeDB(
-                ProximityArray(
-                    ["sleek", ProxRegex("run.*")],
-                    "shoes",
-                    distance=1,
-                )
+                Proximity(["sleek", ProxRegex("run.*")]).within(1, "shoes")
             )
         )
     )
@@ -170,10 +158,9 @@ def test_proximity_array_with_mixed_prox_regex_items_ordered() -> None:
     ids = _ids(
         MockItem.objects.filter(
             description=ParadeDB(
-                ProximityArray(
-                    ["sleek", ProxRegex("run.*")],
+                Proximity(["sleek", ProxRegex("run.*")]).within(
+                    1,
                     "shoes",
-                    distance=1,
                     ordered=True,
                 )
             )
@@ -185,13 +172,7 @@ def test_proximity_array_with_mixed_prox_regex_items_ordered() -> None:
 def test_proximity_array_with_only_prox_regex_left_term() -> None:
     ids = _ids(
         MockItem.objects.filter(
-            description=ParadeDB(
-                ProximityArray(
-                    ProxRegex("run.*"),
-                    "shoes",
-                    distance=1,
-                )
-            )
+            description=ParadeDB(Proximity(ProxRegex("run.*")).within(1, "shoes"))
         )
     )
     assert ids == {3}
@@ -201,10 +182,9 @@ def test_proximity_array_with_prox_regex_custom_max_expansions() -> None:
     ids = _ids(
         MockItem.objects.filter(
             description=ParadeDB(
-                ProximityArray(
-                    ProxRegex("run.*", max_expansions=100),
+                Proximity(ProxRegex("run.*", max_expansions=100)).within(
+                    1,
                     "shoes",
-                    distance=1,
                 )
             )
         )
@@ -216,10 +196,23 @@ def test_proximity_array_with_right_term_list() -> None:
     ids = _ids(
         MockItem.objects.filter(
             description=ParadeDB(
-                ProximityArray(
-                    "running",
+                Proximity("running").within(
+                    1,
                     ["shoes", ProxRegex("boot.*")],
-                    distance=1,
+                )
+            )
+        )
+    )
+    assert ids == {3}
+
+
+def test_proximity_with_nested_proximity_arrays() -> None:
+    ids = _ids(
+        MockItem.objects.filter(
+            description=ParadeDB(
+                Proximity("running").within(
+                    1,
+                    ["shoes", ["shoes", [ProxRegex("boot.*")]]],
                 )
             )
         )
@@ -245,21 +238,15 @@ def test_proximity_array_with_prox_regex_non_string_pattern() -> None:
 def test_proximity_array_with_non_string_left_term() -> None:
     with pytest.raises(
         TypeError,
-        match="ProximityArray left_term must be strings or ProxRegex instances",
+        match="Proximity term must be strings or ProxRegex instances",
     ):
-        ProximityArray(123, "shoes", distance=1)  # type: ignore[arg-type]
+        Proximity(123)  # type: ignore[arg-type]
 
 
 def test_proximity_array_with_invalid_prox_regex_pattern_raises() -> None:
     with pytest.raises(DatabaseError, match="regex parse error"):
         MockItem.objects.filter(
-            description=ParadeDB(
-                ProximityArray(
-                    ProxRegex("[invalid"),
-                    "shoes",
-                    distance=1,
-                )
-            )
+            description=ParadeDB(Proximity(ProxRegex("[invalid")).within(1, "shoes"))
         ).exists()
 
 

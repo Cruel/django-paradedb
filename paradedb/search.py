@@ -8,7 +8,7 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Any, Literal, overload
+from typing import Any, Literal, TypeAlias, overload
 
 from django.core.exceptions import FieldDoesNotExist
 from django.db.backends.base.base import BaseDatabaseWrapper
@@ -195,23 +195,6 @@ class Phrase:
 
 
 @dataclass(frozen=True)
-class Proximity:
-    """Proximity search expression."""
-
-    text: str
-    distance: int
-    ordered: bool = False
-    boost: float | None = None
-    const: float | None = None
-
-    def __post_init__(self) -> None:
-        _validate_string("Proximity text", self.text)
-        _validate_non_negative_int("Proximity distance", self.distance)
-        if not isinstance(self.ordered, bool):
-            raise TypeError("Proximity ordered must be a boolean.")
-
-
-@dataclass(frozen=True)
 class Parse:
     """Parse query expression."""
 
@@ -289,31 +272,8 @@ class RegexPhrase:
 
 
 @dataclass(frozen=True)
-class ProximityRegex:
-    """Proximity regex query expression."""
-
-    left_term: str
-    pattern: str
-    distance: int
-    ordered: bool = False
-    max_expansions: int = 50
-    boost: float | None = None
-    const: float | None = None
-
-    def __post_init__(self) -> None:
-        _validate_string("ProximityRegex left_term", self.left_term)
-        _validate_string("ProximityRegex pattern", self.pattern)
-        _validate_non_negative_int("ProximityRegex distance", self.distance)
-        _validate_non_negative_int("ProximityRegex max_expansions", self.max_expansions)
-
-
-@dataclass(frozen=True)
 class ProxRegex:
-    """Regex clause for use inside :class:`ProximityArray`.
-
-    Wraps ``pdb.prox_regex(pattern, max_expansions)`` so that regex items can
-    be mixed with plain-string terms inside a ``prox_array`` call.
-    """
+    """Regex clause for use inside a proximity expression."""
 
     pattern: str
     max_expansions: int = 50
@@ -323,56 +283,85 @@ class ProxRegex:
         _validate_non_negative_int("ProxRegex max_expansions", self.max_expansions)
 
 
-ProximityArrayItem = str | ProxRegex
-ProximityArrayInput = ProximityArrayItem | list[ProximityArrayItem]
-
-
-def _normalize_proximity_array_side(
-    name: str, value: ProximityArrayInput
-) -> tuple[ProximityArrayItem, ...]:
-    if isinstance(value, list):
-        if not value:
-            raise ValueError(f"ProximityArray requires at least one {name} item.")
-        normalized = tuple(value)
-    else:
-        normalized = (value,)
-    for item in normalized:
-        if not isinstance(item, str | ProxRegex):
-            raise TypeError(
-                f"ProximityArray {name} must be strings or ProxRegex instances."
-            )
-    return normalized
+ProximityTerm: TypeAlias = str | ProxRegex | list["ProximityTerm"]
 
 
 @dataclass(frozen=True)
-class ProximityArray:
-    """Proximity array query expression."""
-
-    left_term: tuple[ProximityArrayItem, ...]
-    right_term: tuple[ProximityArrayItem, ...]
-    distance: int
-    ordered: bool = False
-    boost: float | None = None
-    const: float | None = None
+class Proximity:
+    term: ProximityTerm
 
     def __init__(
         self,
-        left_term: ProximityArrayInput,
-        right_term: ProximityArrayInput,
-        distance: int,
-        ordered: bool = False,
-        boost: float | None = None,
-        const: float | None = None,
+        term: ProximityTerm,
     ) -> None:
-        left_normalized = _normalize_proximity_array_side("left_term", left_term)
-        right_normalized = _normalize_proximity_array_side("right_term", right_term)
-        _validate_non_negative_int("ProximityArray distance", distance)
-        object.__setattr__(self, "left_term", left_normalized)
-        object.__setattr__(self, "right_term", right_normalized)
+        if not isinstance(term, (str, list, ProxRegex)):
+            raise TypeError("Proximity term must be strings or ProxRegex instances")
+        object.__setattr__(self, "term", term)
+
+    def within(
+        self,
+        distance: int,
+        term: ProximityNode | ProximityTerm,
+        *,
+        ordered: bool = False,
+    ) -> ProximityNode:
+        return ProximityNode(distance, ordered, self.term, term)
+
+
+@dataclass(frozen=True)
+class ProximityNode:
+    distance: int
+    ordered: bool
+    left: ProximityNode | ProximityTerm
+    right: ProximityNode | ProximityTerm
+
+    def __init__(
+        self,
+        distance: int,
+        ordered: bool,
+        left: ProximityNode | ProximityTerm,
+        right: ProximityNode | ProximityTerm,
+    ) -> None:
+        if distance < 0:
+            raise ValueError(
+                f"Proximity distance must be zero or positive. Received: {distance}"
+            )
         object.__setattr__(self, "distance", distance)
         object.__setattr__(self, "ordered", ordered)
-        object.__setattr__(self, "boost", boost)
-        object.__setattr__(self, "const", const)
+        object.__setattr__(self, "left", left)
+        object.__setattr__(self, "right", right)
+
+    def within(
+        self,
+        distance: int,
+        term: ProximityNode | ProximityTerm,
+        *,
+        ordered: bool = False,
+    ) -> ProximityNode:
+        return ProximityNode(distance, ordered, self, term)
+
+    def boost(self, value: float) -> ProximityQuery:
+        return ProximityQuery(self, Boost(value))
+
+    def const(self, value: float) -> ProximityQuery:
+        return ProximityQuery(self, Const(value))
+
+
+@dataclass(frozen=True)
+class Boost:
+    value: float
+
+
+@dataclass(frozen=True)
+class Const:
+    value: float
+
+
+@dataclass(frozen=True)
+class ProximityQuery:
+    node: ProximityNode
+    # encoding boost & const like this makes it clear that at most one of them can be set at once
+    relevance_modifier: Boost | Const | None
 
 
 RangeRelation = Literal["Intersects", "Contains", "Within"]
@@ -999,8 +988,6 @@ class ParadeDB:
         | Parse
         | PhrasePrefix
         | RegexPhrase
-        | ProximityRegex
-        | ProximityArray
         | RangeTerm
         | Term
         | Regex
@@ -1015,15 +1002,21 @@ class ParadeDB:
         ...
 
     @overload
-    def __init__(self, __proximity: Proximity) -> None:
-        """Proximity search with a single Proximity object."""
+    def __init__(self, __proximity: ProximityNode) -> None:
+        """Proximity query"""
+        ...
+
+    @overload
+    def __init__(self, __proximity: ProximityQuery) -> None:
+        """Proximity query"""
         ...
 
     def __init__(
         self,
         *terms: Match
         | Phrase
-        | Proximity
+        | ProximityNode
+        | ProximityQuery
         | Empty
         | Exists
         | FuzzyTerm
@@ -1033,8 +1026,6 @@ class ParadeDB:
         | Parse
         | PhrasePrefix
         | RegexPhrase
-        | ProximityRegex
-        | ProximityArray
         | RangeTerm
         | Term
         | Regex
@@ -1176,12 +1167,11 @@ class ParadeDB:
             | Range
             | TermSet
             | Phrase
-            | Proximity
+            | ProximityNode
+            | ProximityQuery
             | Parse
             | PhrasePrefix
             | RegexPhrase
-            | ProximityRegex
-            | ProximityArray
             | RangeTerm
             | Term
             | Regex
@@ -1201,8 +1191,6 @@ class ParadeDB:
                 | Parse
                 | PhrasePrefix
                 | RegexPhrase
-                | ProximityRegex
-                | ProximityArray
                 | RangeTerm
                 | Term
                 | Regex
@@ -1212,7 +1200,7 @@ class ParadeDB:
         ):
             if len(self._terms) != 1:
                 raise ValueError(
-                    "Empty/Exists/FuzzyTerm/ParseWithField/Range/TermSet/Parse/PhrasePrefix/RegexPhrase/ProximityRegex/ProximityArray/RangeTerm/Term/Regex/All queries must be a single term."
+                    "Empty/Exists/FuzzyTerm/ParseWithField/Range/TermSet/Parse/PhrasePrefix/RegexPhrase/RangeTerm/Term/Regex/All queries must be a single term."
                 )
             term = self._terms[0]
             if not isinstance(
@@ -1226,15 +1214,13 @@ class ParadeDB:
                 | Parse
                 | PhrasePrefix
                 | RegexPhrase
-                | ProximityRegex
-                | ProximityArray
                 | RangeTerm
                 | Term
                 | Regex
                 | All,
             ):
                 raise TypeError(
-                    "Empty/Exists/FuzzyTerm/ParseWithField/Range/TermSet/Parse/PhrasePrefix/RegexPhrase/ProximityRegex/ProximityArray/RangeTerm/Term/Regex/All cannot be mixed with other terms."
+                    "Empty/Exists/FuzzyTerm/ParseWithField/Range/TermSet/Parse/PhrasePrefix/RegexPhrase/RangeTerm/Term/Regex/All cannot be mixed with other terms."
                 )
             return OP_SEARCH, (term,)
 
@@ -1266,13 +1252,13 @@ class ParadeDB:
                 phrases.append(term)
             return OP_PHRASE, tuple(phrases)
 
-        if any(isinstance(term, Proximity) for term in self._terms):
+        if any(
+            isinstance(term, ProximityNode | ProximityQuery) for term in self._terms
+        ):
             if len(self._terms) != 1:
-                raise ValueError(
-                    "Proximity queries accept a single Proximity term. Use ProximityArray for multiple proximity clauses."
-                )
+                raise ValueError("Proximity queries accept a single argument.")
             term = self._terms[0]
-            if not isinstance(term, Proximity):
+            if not isinstance(term, ProximityNode | ProximityQuery):
                 raise TypeError("Proximity cannot be mixed with other terms.")
             return OP_SEARCH, (term,)
 
@@ -1341,20 +1327,31 @@ class ParadeDB:
             fuzzy_args.append("t")
         return f"{sql}::{PDB_TYPE_FUZZY}({', '.join(fuzzy_args)})"
 
-    def _render_proximity_array_side(
-        self, terms: tuple[ProximityArrayItem, ...]
-    ) -> str:
-        parts: list[str] = []
-        for item in terms:
-            if isinstance(item, ProxRegex):
-                parts.append(
-                    f"{FN_PROX_REGEX}({self._quote_term(item.pattern)}, {item.max_expansions})"
-                )
+    def _render_proximity_node(self, node: ProximityNode) -> str:
+        return f"({self._render_proximity(node)})"
+
+    def _render_proximity(self, item: ProximityNode | ProximityTerm) -> str:
+        if isinstance(item, ProximityNode):
+            operator = OP_PROXIMITY_ORD if item.ordered else OP_PROXIMITY
+            lhs = self._render_proximity(item.left)
+            rhs = self._render_proximity(item.right)
+            # if the right side is a node we need to wrap the final expression in parens
+            # to produce the correct associativity
+            if isinstance(item.right, ProximityNode):
+                return f"{lhs} {operator} {item.distance} {operator} ({rhs})"
             else:
-                parts.append(self._quote_term(item))
-        if len(parts) > 1:
+                return f"{lhs} {operator} {item.distance} {operator} {rhs}"
+        return self._render_proximity_term(item)
+
+    def _render_proximity_term(self, term: ProximityTerm) -> str:
+        if isinstance(term, str):
+            return self._quote_term(term)
+        if isinstance(term, ProxRegex):
+            return f"{FN_PROX_REGEX}({self._quote_term(term.pattern)}, {term.max_expansions})"
+        if isinstance(term, list):
+            parts = [self._render_proximity_term(x) for x in term]
             return f"{FN_PROX_ARRAY}({', '.join(parts)})"
-        return parts[0]
+        raise AssertionError(f"Unhandled proximity term: {term!r}")
 
     def _render_term(
         self,
@@ -1366,12 +1363,11 @@ class ParadeDB:
         | Range
         | TermSet
         | Phrase
-        | Proximity
+        | ProximityNode
+        | ProximityQuery
         | Parse
         | PhrasePrefix
         | RegexPhrase
-        | ProximityRegex
-        | ProximityArray
         | RangeTerm
         | Term
         | Regex
@@ -1387,21 +1383,21 @@ class ParadeDB:
             if term.tokenizer is not None:
                 literal = f"{literal}::{_tokenizer_cast(term.tokenizer)}"
             return self._append_scoring(literal, boost=term.boost, const=term.const)
-        if isinstance(term, Proximity):
-            words = [word for word in term.text.split() if word]
-            if len(words) < 2:
-                raise ValueError(
-                    "Proximity text must include at least two whitespace-separated terms."
-                )
-            operator = OP_PROXIMITY_ORD if term.ordered else OP_PROXIMITY
-            clause_sql = self._quote_term(words[0])
-            for word in words[1:]:
-                clause_sql = (
-                    f"{clause_sql} {operator} {term.distance} {operator} "
-                    f"{self._quote_term(word)}"
-                )
-            rendered = f"({clause_sql})"
-            return self._append_scoring(rendered, boost=term.boost, const=term.const)
+        if isinstance(term, ProximityNode):
+            return self._render_proximity_node(term)
+        if isinstance(term, ProximityQuery):
+            rendered = self._render_proximity_node(term.node)
+            boost = (
+                term.relevance_modifier.value
+                if isinstance(term.relevance_modifier, Boost)
+                else None
+            )
+            const = (
+                term.relevance_modifier.value
+                if isinstance(term.relevance_modifier, Const)
+                else None
+            )
+            return self._append_scoring(rendered, boost=boost, const=const)
         if isinstance(term, Parse):
             rendered = (
                 f"{FN_PARSE}({self._quote_term(term.query)}"
@@ -1421,19 +1417,6 @@ class ParadeDB:
                 f"{FN_REGEX_PHRASE}(ARRAY[{regex_sql}]"
                 f"{self._render_options({'slop': term.slop, 'max_expansions': term.max_expansions})})"
             )
-            return self._append_scoring(rendered, boost=term.boost, const=term.const)
-        if isinstance(term, ProximityRegex):
-            operator = OP_PROXIMITY_ORD if term.ordered else OP_PROXIMITY
-            rendered = (
-                f"({self._quote_term(term.left_term)} {operator} {term.distance} {operator} "
-                f"{FN_PROX_REGEX}({self._quote_term(term.pattern)}, {term.max_expansions}))"
-            )
-            return self._append_scoring(rendered, boost=term.boost, const=term.const)
-        if isinstance(term, ProximityArray):
-            operator = OP_PROXIMITY_ORD if term.ordered else OP_PROXIMITY
-            left_sql = self._render_proximity_array_side(term.left_term)
-            right_sql = self._render_proximity_array_side(term.right_term)
-            rendered = f"({left_sql} {operator} {term.distance} {operator} {right_sql})"
             return self._append_scoring(rendered, boost=term.boost, const=term.const)
         if isinstance(term, RangeTerm):
             if term.relation is None:
@@ -1622,8 +1605,6 @@ __all__ = [
     "PhrasePrefix",
     "ProxRegex",
     "Proximity",
-    "ProximityArray",
-    "ProximityRegex",
     "Range",
     "RangeRelation",
     "RangeTerm",
