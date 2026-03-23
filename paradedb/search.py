@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Literal, TypeAlias
 
-from django.core.exceptions import FieldDoesNotExist
 from django.db.backends.base.base import BaseDatabaseWrapper
 from django.db.models import (
     AutoField,
@@ -658,14 +657,14 @@ class Match:
 class MoreLikeThis(Expression):
     """More Like This query filter.
 
-    Provide exactly one of product_id, product_ids, or document (dict/JSON string).
-    Fields are only valid with product_id/product_ids.
+    Provide exactly one of id, ids, or document (dict/JSON string).
+    Fields are only valid with id/ids.
 
     Args:
-        product_id: Single document ID for similarity search
-        product_ids: Multiple document IDs for similarity search (OR'd together)
+        id: Single document ID for similarity search
+        ids: Multiple document IDs for similarity search (OR'd together)
         document: Custom JSON document (dict or JSON string) for similarity search
-        fields: List of fields to consider (only valid with product_id/product_ids)
+        fields: List of fields to consider (only valid with id/ids)
         key_field: Field name to use for comparison (defaults to model's primary key)
         min_term_freq: Minimum term frequency (must be >= 1)
         max_query_terms: Maximum query terms (must be >= 1)
@@ -685,8 +684,8 @@ class MoreLikeThis(Expression):
     def __init__(
         self,
         *,
-        product_id: int | None = None,
-        product_ids: Iterable[int] | None = None,
+        id: int | None = None,
+        ids: Iterable[int] | None = None,
         document: dict[str, Any] | str | None = None,
         fields: Iterable[str] | None = None,
         key_field: str | None = None,
@@ -700,8 +699,8 @@ class MoreLikeThis(Expression):
         stopwords: Iterable[str] | None = None,
     ) -> None:
         super().__init__()
-        self.product_id = product_id
-        self.product_ids = list(product_ids) if product_ids is not None else None
+        self.id = id
+        self.ids = list(ids) if ids is not None else None
         self.document: str | None = None
         self._document_input = document
         self.fields = list(fields) if fields is not None else None
@@ -721,14 +720,14 @@ class MoreLikeThis(Expression):
         if self._count_inputs() != 1:
             raise ValueError("MoreLikeThis requires exactly one input source.")
 
-        self._validate_product_inputs()
+        self._validate_id_inputs()
         self._validate_key_field()
         self._validate_fields()
         self._validate_stopwords()
 
         # Validate fields only with ID-based queries
         if self._document_input is not None and self.fields:
-            raise ValueError("MoreLikeThis fields are only valid with product_id(s).")
+            raise ValueError("MoreLikeThis fields are only valid with id(s).")
 
         # Validate document type and convert to JSON string
         self._validate_document_input()
@@ -737,26 +736,26 @@ class MoreLikeThis(Expression):
     def _count_inputs(self) -> int:
         return sum(
             [
-                self.product_id is not None,
-                self.product_ids is not None,
+                self.id is not None,
+                self.ids is not None,
                 self._document_input is not None,
             ]
         )
 
-    def _validate_product_inputs(self) -> None:
-        if self.product_id is not None and (
-            isinstance(self.product_id, bool) or not isinstance(self.product_id, int)
+    def _validate_id_inputs(self) -> None:
+        if self.id is not None and (
+            isinstance(self.id, bool) or not isinstance(self.id, int)
         ):
-            raise TypeError("MoreLikeThis product_id must be an integer.")
+            raise TypeError("MoreLikeThis id must be an integer.")
 
-        if self.product_ids is not None and not self.product_ids:
-            raise ValueError("MoreLikeThis product_ids cannot be empty.")
+        if self.ids is not None and not self.ids:
+            raise ValueError("MoreLikeThis ids cannot be empty.")
 
-        if self.product_ids is not None and any(
-            isinstance(product_id, bool) or not isinstance(product_id, int)
-            for product_id in self.product_ids
+        if self.ids is not None and any(
+            isinstance(item_id, bool) or not isinstance(item_id, int)
+            for item_id in self.ids
         ):
-            raise TypeError("MoreLikeThis product_ids must contain integers.")
+            raise TypeError("MoreLikeThis ids must contain integers.")
 
     def _validate_key_field(self) -> None:
         if self.key_field is not None and not isinstance(self.key_field, str):
@@ -822,142 +821,93 @@ class MoreLikeThis(Expression):
             if param_value < 1:
                 raise ValueError(f"MoreLikeThis {param_name} must be >= 1.")
 
-    def resolve_expression(
-        self,
-        query: Any = None,
-        allow_joins: bool = True,
-        reuse: set[str] | None = None,
-        summarize: bool = False,
-        for_save: bool = False,
-    ) -> MoreLikeThis:
-        return super().resolve_expression(
-            query=query,
-            allow_joins=allow_joins,
-            reuse=reuse,
-            summarize=summarize,
-            for_save=for_save,
-        )
 
-    def get_source_expressions(self) -> list[object]:
-        return []
+def render_more_like_this(term: MoreLikeThis, lhs_sql: str) -> tuple[str, list[Any]]:
+    params: list[Any] = []
 
-    def as_sql(
-        self, compiler: SQLCompiler, connection: BaseDatabaseWrapper
-    ) -> tuple[str, list[Any]]:
-        pk_sql = self._pk_sql(compiler, connection)
-        params: list[Any] = []
-
-        if self.product_ids is not None:
-            expressions = []
-            for value in self.product_ids:
-                mlt_sql, mlt_params = self._render_mlt_call(value)
-                expressions.append(f"{pk_sql} {OP_SEARCH} {mlt_sql}")
-                params.extend(mlt_params)
-            joined = " OR ".join(expressions)
-            return f"({joined})", params
-
-        if self.product_id is not None:
-            mlt_sql, mlt_params = self._render_mlt_call(self.product_id)
+    if term.ids is not None:
+        expressions = []
+        for value in term.ids:
+            mlt_sql, mlt_params = _render_more_like_this_call(term, value)
+            expressions.append(f"{lhs_sql} {OP_SEARCH} {mlt_sql}")
             params.extend(mlt_params)
-            return f"{pk_sql} {OP_SEARCH} {mlt_sql}", params
+        joined = " OR ".join(expressions)
+        return f"({joined})", params
 
-        mlt_sql, mlt_params = self._render_mlt_call(self.document)
+    if term.id is not None:
+        mlt_sql, mlt_params = _render_more_like_this_call(term, term.id)
         params.extend(mlt_params)
-        return f"{pk_sql} {OP_SEARCH} {mlt_sql}", params
+        return f"{lhs_sql} {OP_SEARCH} {mlt_sql}", params
 
-    def _pk_sql(self, compiler: SQLCompiler, connection: BaseDatabaseWrapper) -> str:
-        query = compiler.query
-        alias = query.get_initial_alias()
-        model = query.model
-        assert model is not None
+    mlt_sql, mlt_params = _render_more_like_this_call(term, term.document)
+    params.extend(mlt_params)
+    return f"{lhs_sql} {OP_SEARCH} {mlt_sql}", params
 
-        # Use custom key_field if provided, otherwise default to primary key
-        if self.key_field:
-            # Find the field in the model to get its column name
-            try:
-                field = model._meta.get_field(self.key_field)
-            except FieldDoesNotExist as e:
-                raise ValueError(
-                    f"MoreLikeThis key_field '{self.key_field}' not found in model {model.__name__}"
-                ) from e
-            # Check if field has column attribute (exclude relations)
-            if not hasattr(field, "column") or field.column is None:
-                raise ValueError(
-                    f"MoreLikeThis key_field '{self.key_field}' must be a concrete field with a column"
-                )
-            key_column: str = field.column
-        else:
-            key_column = model._meta.pk.column
 
-        return f"{connection.ops.quote_name(alias)}.{connection.ops.quote_name(key_column)}"
+def _render_more_like_this_call(
+    term: MoreLikeThis, value: int | str | None
+) -> tuple[str, list[Any]]:
+    args: list[str] = []
+    params: list[Any] = []
 
-    def _render_mlt_call(self, value: int | str | None) -> tuple[str, list[Any]]:
-        """Render the more_like_this function call with parameterized values.
+    if isinstance(value, str):
+        # This is a JSON document - use parameter
+        args.append("%s")
+        params.append(value)
+    else:
+        # This is an integer ID - use parameter for safety
+        args.append("%s")
+        params.append(value)
 
-        Returns:
-            Tuple of (sql_string, parameters_list)
-        """
-        args: list[str] = []
-        params: list[Any] = []
+    if term.fields and not isinstance(value, str):
+        # Fields array only valid for ID-based queries
+        # Build parameterized array
+        field_placeholders = ", ".join("%s" for _ in term.fields)
+        args.append(f"ARRAY[{field_placeholders}]::text[]")
+        params.extend(term.fields)
 
-        if isinstance(value, str):
-            # This is a JSON document - use parameter
-            args.append("%s")
-            params.append(value)
-        else:
-            # This is an integer ID - use parameter for safety
-            args.append("%s")
-            params.append(value)
+    options, option_params = _render_options(
+        {
+            "min_term_frequency": term.min_term_freq,
+            "max_query_terms": term.max_query_terms,
+            "min_doc_frequency": term.min_doc_freq,
+            "max_term_frequency": term.max_term_freq,
+            "max_doc_frequency": term.max_doc_freq,
+            "min_word_length": term.min_word_length,
+            "max_word_length": term.max_word_length,
+            "stopwords": term.stopwords,
+        }
+    )
+    params.extend(option_params)
+    return f"{FN_MORE_LIKE_THIS}({', '.join(args)}{options})", params
 
-        if self.fields and not isinstance(value, str):
-            # Fields array only valid for ID-based queries
-            # Build parameterized array
-            field_placeholders = ", ".join("%s" for _ in self.fields)
-            args.append(f"ARRAY[{field_placeholders}]::text[]")
-            params.extend(self.fields)
 
-        options, option_params = self._render_options(
-            {
-                "min_term_frequency": self.min_term_freq,
-                "max_query_terms": self.max_query_terms,
-                "min_doc_frequency": self.min_doc_freq,
-                "max_term_frequency": self.max_term_freq,
-                "max_doc_frequency": self.max_doc_freq,
-                "min_word_length": self.min_word_length,
-                "max_word_length": self.max_word_length,
-                "stopwords": self.stopwords,
-            }
-        )
-        params.extend(option_params)
-        return f"{FN_MORE_LIKE_THIS}({', '.join(args)}{options})", params
+def _render_options(options: dict[str, object | None]) -> tuple[str, list[Any]]:
+    """Render options for more_like_this function with parameterized values.
 
-    @staticmethod
-    def _render_options(options: dict[str, object | None]) -> tuple[str, list[Any]]:
-        """Render options for more_like_this function with parameterized values.
+    Returns:
+        Tuple of (sql_string, parameters_list)
+    """
+    rendered: list[str] = []
+    params: list[Any] = []
 
-        Returns:
-            Tuple of (sql_string, parameters_list)
-        """
-        rendered: list[str] = []
-        params: list[Any] = []
-
-        for key, value in options.items():
-            if value is None:
+    for key, value in options.items():
+        if value is None:
+            continue
+        # Handle stopwords array with parameterization
+        if key == "stopwords" and isinstance(value, list):
+            if not value:
                 continue
-            # Handle stopwords array with parameterization
-            if key == "stopwords" and isinstance(value, list):
-                if not value:
-                    continue
-                stopword_placeholders = ", ".join("%s" for _ in value)
-                rendered.append(f"{key} => ARRAY[{stopword_placeholders}]")
-                params.extend(value)
-            else:
-                # Numeric values are safe to inline as they're validated
-                rendered.append(f"{key} => {value}")
+            stopword_placeholders = ", ".join("%s" for _ in value)
+            rendered.append(f"{key} => ARRAY[{stopword_placeholders}]")
+            params.extend(value)
+        else:
+            # Numeric values are safe to inline as they're validated
+            rendered.append(f"{key} => {value}")
 
-        if not rendered:
-            return "", []
-        return ", " + ", ".join(rendered), params
+    if not rendered:
+        return "", []
+    return ", " + ", ".join(rendered), params
 
 
 TermType = (
@@ -965,6 +915,7 @@ TermType = (
     | Empty
     | Exists
     | FuzzyTerm
+    | MoreLikeThis
     | ParseWithField
     | Range
     | TermSet
@@ -1028,6 +979,8 @@ class ParadeDB:
         _connection: BaseDatabaseWrapper,
         lhs_sql: str,
     ) -> tuple[str, list[object]]:
+        if isinstance(self._term, MoreLikeThis):
+            return render_more_like_this(self._term, lhs_sql)
         rendered = self._render_term(self._term)
         return f"{lhs_sql} {self._lookup_operator()} {rendered}", []
 
