@@ -43,7 +43,7 @@ The official [Django](https://www.djangoproject.com/) integration for [ParadeDB]
 
 ## Examples
 
-- [Quick Start](examples/quickstart/quickstart.py)
+- [Quickstart](examples/quickstart/quickstart.py)
 - [Faceted Search](examples/faceted_search/faceted_search.py)
 - [Autocomplete](examples/autocomplete/autocomplete.py)
 - [More Like This](examples/more_like_this/more_like_this.py)
@@ -75,4 +75,4 @@ We would like to thank the following members of the Django community for their v
 
 ## License
 
-django-paradedb is licensed under the [MIT License](LICENSE).
+ParadeDB for Django is licensed under the [MIT License](LICENSE).
