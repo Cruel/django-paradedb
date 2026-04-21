@@ -40,8 +40,8 @@
     "PDB_TYPE_FUZZY": "pdb.fuzzy",
     "PDB_TYPE_SLOP":  "pdb.slop",
     "PDB_TYPE_QUERY": "pdb.query",
+    "PDB_TYPE_ALIAS":              "pdb.alias",
 
-    "PDB_TYPE_TOKENIZER_ALIAS":              "pdb.alias",
     "PDB_TYPE_TOKENIZER_CHINESE_COMPATIBLE": "pdb.chinese_compatible",
     "PDB_TYPE_TOKENIZER_JIEBA":              "pdb.jieba",
     "PDB_TYPE_TOKENIZER_LINDERA":            "pdb.lindera",
@@ -52,6 +52,8 @@
     "PDB_TYPE_TOKENIZER_SIMPLE":             "pdb.simple",
     "PDB_TYPE_TOKENIZER_SOURCE_CODE":        "pdb.source_code",
     "PDB_TYPE_TOKENIZER_UNICODE_WORDS":      "pdb.unicode_words",
-    "PDB_TYPE_TOKENIZER_WHITESPACE":         "pdb.whitespace"
+    "PDB_TYPE_TOKENIZER_WHITESPACE":         "pdb.whitespace",
+    "PDB_TYPE_TOKENIZER_ICU":                "pdb.icu",
+    "PDB_TYPE_TOKENIZER_EDGE_NGRAM":         "pdb.edge_ngram"
   }
 }
