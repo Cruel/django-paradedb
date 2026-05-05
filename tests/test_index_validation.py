@@ -70,3 +70,24 @@ def test_native_json_fields_on_non_json_field_raises_value_error() -> None:
     )
     with pytest.raises(ValueError, match="is not a JSONField"):
         index.create_sql(model=Product, schema_editor=DummySchemaEditor())
+
+
+def test_bm25_index_with_equivalent_tokenizers_compares_equal() -> None:
+    left = BM25Index(
+        fields={
+            "id": {},
+            "description": {"tokenizer": Tokenizer.unicode_words()},
+        },
+        key_field="id",
+        name="product_search_idx",
+    )
+    right = BM25Index(
+        fields={
+            "id": {},
+            "description": {"tokenizer": Tokenizer.unicode_words()},
+        },
+        key_field="id",
+        name="product_search_idx",
+    )
+
+    assert left == right
